@@ -40,7 +40,11 @@ export interface UpdateMessage<T = unknown, R = unknown> extends Message {
     results: R
 }
 
-type ScanResultUpdate = UpdateMessage<
+export function isUpdateMessage(msg: unknown): msg is UpdateMessage {
+    return !!msg && typeof msg === 'object' && 'id' in msg && 'update' in msg
+}
+
+export type ScanResultUpdate = UpdateMessage<
     UpdateType.ScanResult,
     {
         MAC: string
@@ -48,6 +52,14 @@ type ScanResultUpdate = UpdateMessage<
         UUIDs: [string]
     }
 >
+
+export type Device = ScanResultUpdate['results'] & {
+    connectionState: ConnectionState
+}
+
+export function isScanResultUpdate(message: UpdateMessage): message is ScanResultUpdate {
+    return message.update === UpdateType.ScanResult
+}
 
 export type GATTNotifyUpdate = UpdateMessage<
     UpdateType.GATTNotify,
@@ -57,6 +69,10 @@ export type GATTNotifyUpdate = UpdateMessage<
         Data: Base64String
     }
 >
+
+export function isGATTNotifyUpdate(msg: UpdateMessage): msg is GATTNotifyUpdate {
+    return msg.id === 0 && msg.type === MessageType.Update && msg.update === UpdateType.GATTNotify
+}
 
 type ConnectionStateUpdate = UpdateMessage<
     UpdateType.ConnectionState,
@@ -148,9 +164,9 @@ export interface RequestMessage<P = unknown> extends Message {
     params: P
 }
 
-export enum CafehubClientEvent {
+export enum CafeHubClientEvent {
     Connect = 'CONNECT',
-    Data = 'DATA',
+    UpdateMessage = 'UPDATE_MESSAGE',
     DeviceFound = 'DEVICE_FOUND',
     Disconnect = 'DISCONNECT',
     Error = 'ERROR',
@@ -158,14 +174,14 @@ export enum CafehubClientEvent {
     StateChange = 'STATE_CHANGE',
 }
 
-export enum CafehubClientState {
+export enum CafeHubClientState {
     Disconnected = WebSocket.CLOSED,
     Connecting = WebSocket.CONNECTING,
     Connected = WebSocket.OPEN,
     Disconnecting = WebSocket.CLOSING,
 }
 
-export interface CafehubClientOptions {
+export interface CafeHubClientOptions {
     autoConnect?: boolean
     autoReconnect?: boolean
 }

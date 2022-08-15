@@ -1,8 +1,13 @@
 import {
-    CafehubClientEvent,
-    CafehubClientOptions,
-    CafehubClientState,
+    CafeHubClientEvent,
+    CafeHubClientOptions,
+    CafeHubClientState,
+    ConnectionState,
+    Device,
     GATTNotifyUpdate,
+    isGATTNotifyUpdate,
+    isScanResultUpdate,
+    isUpdateMessage,
     MessageType,
     Request,
     RequestMessage,
@@ -22,13 +27,14 @@ const ReconnectAfter = {
 interface PromiseSettlers {
     resolve: (message: UpdateMessage) => void
     reject: (reason?: unknown) => void
+    onUpdate: (message: UpdateMessage) => boolean
 }
 
 interface SentMessages {
     [id: string]: PromiseSettlers
 }
 
-export default class CafehubClient {
+export default class CafeHubClient {
     private readonly eventEmitter: EventEmitter
 
     private ws: undefined | WebSocket
@@ -37,17 +43,17 @@ export default class CafehubClient {
 
     private lastRequestId: undefined | number
 
-    private sentMessages: undefined | SentMessages
+    private sentMessages: SentMessages = {}
 
     private pendingMMRReads: undefined | object[]
 
     private reconnectionTimeoutId: undefined | number
 
-    private lastKnownState = CafehubClientState.Disconnected
+    private lastKnownState = CafeHubClientState.Disconnected
 
     constructor(
         readonly url: string,
-        { autoReconnect = true, autoConnect = true }: CafehubClientOptions = {}
+        { autoReconnect = true, autoConnect = true }: CafeHubClientOptions = {}
     ) {
         this.eventEmitter = new EventEmitter()
         this.autoReconnect = autoReconnect
@@ -65,11 +71,9 @@ export default class CafehubClient {
             this.ws.onclose = null
         }
 
-        if (this.sentMessages) {
-            Object.values(this.sentMessages).forEach(({ reject }) => {
-                reject(new Error('Abort'))
-            })
-        }
+        Object.values(this.sentMessages).forEach(({ reject }) => {
+            reject(new Error('Abort'))
+        })
 
         if (this.reconnectionTimeoutId) {
             window.clearTimeout(this.reconnectionTimeoutId)
@@ -77,7 +81,7 @@ export default class CafehubClient {
         }
 
         this.reconnectionTimeoutId = undefined
-        this.sentMessages = undefined
+        this.sentMessages = {}
         this.lastRequestId = undefined
         this.pendingMMRReads = undefined
         this.ws = undefined
@@ -85,8 +89,8 @@ export default class CafehubClient {
 
     connect({ autoReconnectAfter = ReconnectAfter.Initial }: { autoReconnectAfter?: number } = {}) {
         if (
-            this.getState() === CafehubClientState.Connected ||
-            this.getState() === CafehubClientState.Connecting
+            this.getState() === CafeHubClientState.Connected ||
+            this.getState() === CafeHubClientState.Connecting
         ) {
             return
         }
@@ -96,19 +100,17 @@ export default class CafehubClient {
         this.ws = new WebSocket(this.url)
 
         this.ws.onopen = () => {
-            console.info('onopen')
-
-            this.eventEmitter.emit(CafehubClientEvent.Connect)
+            this.eventEmitter.emit(CafeHubClientEvent.Connect)
             this.touchState()
         }
 
         this.ws.onclose = (e: CloseEvent) => {
-            console.info('onclose', e)
-
-            this.eventEmitter.emit(CafehubClientEvent.Disconnect, e)
+            this.eventEmitter.emit(CafeHubClientEvent.Disconnect, e)
             this.touchState()
 
             if (this.autoReconnect) {
+                console.info(`Reconnecting in ${autoReconnectAfter}ms…`)
+
                 this.reconnectionTimeoutId = window.setTimeout(() => {
                     this.connect({
                         autoReconnectAfter: Math.min(
@@ -121,23 +123,11 @@ export default class CafehubClient {
         }
 
         this.ws.onerror = (e: Event) => {
-            console.info('onerror', e)
-
-            this.eventEmitter.emit(CafehubClientEvent.Error, e)
+            this.eventEmitter.emit(CafeHubClientEvent.Error, e)
             this.touchState()
         }
 
-        function isIncomingMessage(data: undefined | object): data is UpdateMessage {
-            return !!data && typeof data === 'object' && 'id' in data
-        }
-
-        function isGATTNotify(data: UpdateMessage): data is GATTNotifyUpdate {
-            return data.type === MessageType.Update && data.update === UpdateType.GATTNotify
-        }
-
         this.ws.onmessage = (e: MessageEvent<string>) => {
-            console.info('onmessage', e)
-
             let data: undefined | object
 
             try {
@@ -146,27 +136,38 @@ export default class CafehubClient {
                 // Ignore.
             }
 
-            if (!isIncomingMessage(data)) {
+            if (!isUpdateMessage(data)) {
                 return
             }
 
             if (data.id === 0) {
-                if (!isGATTNotify(data)) {
+                if (!isGATTNotifyUpdate(data)) {
                     return
                 }
 
-                this.eventEmitter.emit(CafehubClientEvent.CharChange, data)
+                this.eventEmitter.emit(CafeHubClientEvent.CharChange, data)
 
                 return
             }
 
-            if (!this.sentMessages || !this.sentMessages[data.id]) {
+            if (!this.sentMessages[data.id]) {
                 return
             }
 
-            this.sentMessages[data.id].resolve(data)
+            const { resolve, onUpdate } = this.sentMessages[data.id]
 
-            this.eventEmitter.emit(CafehubClientEvent.Data, data)
+            if (onUpdate(data)) {
+                resolve(data)
+            }
+
+            this.eventEmitter.emit(CafeHubClientEvent.UpdateMessage, data)
+
+            if (isScanResultUpdate(data) && data.results.MAC) {
+                this.eventEmitter.emit(CafeHubClientEvent.DeviceFound, {
+                    ...data.results,
+                    connectionState: ConnectionState.Disconnected,
+                })
+            }
         }
 
         this.touchState()
@@ -175,30 +176,42 @@ export default class CafehubClient {
     getState() {
         switch (this.ws?.readyState) {
             case WebSocket.OPEN:
-                return CafehubClientState.Connected
+                return CafeHubClientState.Connected
             case WebSocket.CONNECTING:
-                return CafehubClientState.Connecting
+                return CafeHubClientState.Connecting
             case WebSocket.CLOSING:
-                return CafehubClientState.Disconnecting
+                return CafeHubClientState.Disconnecting
             case WebSocket.CLOSED:
             default:
-                return CafehubClientState.Disconnected
+                return CafeHubClientState.Disconnected
         }
     }
 
-    on(eventName: string, listener: (...args: unknown[]) => void) {
+    on(eventName: CafeHubClientEvent.DeviceFound, listener: (device: Device) => void): CafeHubClient
+
+    on(
+        eventName: CafeHubClientEvent.UpdateMessage,
+        listener: (message: UpdateMessage) => void
+    ): CafeHubClient
+
+    on(
+        eventName: CafeHubClientEvent.StateChange,
+        listener: (state: CafeHubClientState) => void
+    ): CafeHubClient
+
+    on(eventName: string | CafeHubClientEvent, listener: (...args: any[]) => void): CafeHubClient {
         this.eventEmitter.on(eventName, listener)
 
         return this
     }
 
-    once(eventName: string, listener: (...args: unknown[]) => void) {
+    once(eventName: string | CafeHubClientEvent, listener: (...args: any[]) => void) {
         this.eventEmitter.once(eventName, listener)
 
         return this
     }
 
-    off(eventName: string, listener: (...args: unknown[]) => void) {
+    off(eventName: string | CafeHubClientEvent, listener: (...args: any[]) => void) {
         this.eventEmitter.off(eventName, listener)
 
         return this
@@ -223,14 +236,22 @@ export default class CafehubClient {
 
         this.lastKnownState = currentState
 
-        this.eventEmitter.emit(CafehubClientEvent.StateChange)
+        this.eventEmitter.emit(CafeHubClientEvent.StateChange, currentState)
     }
 
     async send(
         request: Request,
-        { timeout, quiet = false }: { timeout?: number; quiet?: boolean } = {}
+        {
+            timeout,
+            quiet = false,
+            onUpdate,
+        }: {
+            timeout?: number
+            quiet?: boolean
+            onUpdate?: (message: UpdateMessage) => boolean
+        } = {}
     ) {
-        if (!this.ws || this.getState() !== CafehubClientState.Connected) {
+        if (!this.ws || this.getState() !== CafeHubClientState.Connected) {
             console.warn('Message skipped. WebSocket not connected.', request)
             return
         }
@@ -243,10 +264,16 @@ export default class CafehubClient {
 
         const promiseSettlers: PromiseSettlers = {
             resolve() {
-                //
+                throw new Error('Failed to overwrite `resolve`')
             },
             reject() {
-                //
+                throw new Error('Failed to overwrite `reject`')
+            },
+            onUpdate(message: UpdateMessage) {
+                return (
+                    message.id === payload.id &&
+                    (typeof onUpdate !== 'function' || onUpdate(message))
+                )
             },
         }
 
@@ -267,10 +294,6 @@ export default class CafehubClient {
                 })
             }
         )
-
-        if (!this.sentMessages) {
-            this.sentMessages = {}
-        }
 
         Object.assign(this.sentMessages, {
             [payload.id]: promiseSettlers,
@@ -300,9 +323,7 @@ export default class CafehubClient {
                 throw e
             }
         } finally {
-            if (this.sentMessages) {
-                delete this.sentMessages[payload.id]
-            }
+            delete this.sentMessages[payload.id]
         }
 
         return payload

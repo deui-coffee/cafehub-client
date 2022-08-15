@@ -1,7 +1,7 @@
 {
     "name": "cafehub-client",
     "version": "1.0.0",
-    "description": "Cafehub websocket client",
+    "description": "CafeHub websocket client",
     "exports": {
         ".": "./index.mjs",
         "./types": "./types.mjs"
