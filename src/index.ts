@@ -71,8 +71,9 @@ export default class CafeHubClient {
             this.ws.onclose = null
         }
 
-        Object.values(this.sentMessages).forEach(({ reject }) => {
-            reject(new Error('Abort'))
+        Object.keys(this.sentMessages).forEach((key) => {
+            this.sentMessages[key].reject(new Error('Abort'))
+            delete this.sentMessages[key]
         })
 
         if (this.reconnectionTimeoutId) {
