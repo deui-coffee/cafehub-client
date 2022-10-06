@@ -1,330 +1,149 @@
+import { EventEmitter } from 'events'
+import AbortError from './errors/AbortError'
 import {
-    CafeHubClientEvent,
-    CafeHubClientOptions,
-    CafeHubClientState,
+    CafeHubEvent,
     ConnectionState,
-    Device,
-    GATTNotifyUpdate,
+    ConnectOptions,
+    Defer,
     isGATTNotifyUpdate,
     isScanResultUpdate,
     isUpdateMessage,
     MessageType,
+    RawMessage,
     Request,
     RequestMessage,
+    Requests,
+    SendOptions,
     UpdateMessage,
-    UpdateType,
+    WebSocketClientEvent,
 } from './types'
-import { EventEmitter } from 'events'
+import defer from './utils/defer'
+import delay from './utils/delay'
+import WebSocketClient from './utils/WebSocketClient'
 
 const MaxRequestId = 1000000000
 
-const ReconnectAfter = {
-    Initial: 0,
-    Step: 250,
-    Max: 10000,
-}
-
-interface PromiseSettlers {
-    resolve: (message: UpdateMessage) => void
-    reject: (reason?: unknown) => void
-    onUpdate: (message: UpdateMessage) => boolean
-}
-
-interface SentMessages {
-    [id: string]: PromiseSettlers
-}
-
 export default class CafeHubClient {
-    private readonly eventEmitter: EventEmitter
-
-    private ws: undefined | WebSocket
-
-    autoReconnect: boolean
-
     private lastRequestId: undefined | number
 
-    private sentMessages: SentMessages = {}
+    eventEmitter = new EventEmitter()
 
-    private pendingMMRReads: undefined | object[]
+    wsc: WebSocketClient
 
-    private reconnectionTimeoutId: undefined | number
+    requests: Requests = {}
 
-    private lastKnownState = CafeHubClientState.Disconnected
+    onTeardown = () => {
+        // Skip all remaining requests.
+        Object.keys(this.requests).forEach(
+            (key) => void this.requests[key].reject(new AbortError())
+        )
 
-    constructor(
-        readonly url: string,
-        { autoReconnect = true, autoConnect = true }: CafeHubClientOptions = {}
-    ) {
-        this.eventEmitter = new EventEmitter()
-        this.autoReconnect = autoReconnect
-
-        if (autoConnect) {
-            this.connect()
-        }
+        this.requests = {}
     }
 
-    teardown() {
-        if (this.ws) {
-            this.ws.onopen = null
-            this.ws.onmessage = null
-            this.ws.onerror = null
-            this.ws.onclose = null
-        }
-
-        Object.keys(this.sentMessages).forEach((key) => {
-            this.sentMessages[key].reject(new Error('Abort'))
-            delete this.sentMessages[key]
-        })
-
-        if (this.reconnectionTimeoutId) {
-            window.clearTimeout(this.reconnectionTimeoutId)
-            this.reconnectionTimeoutId = undefined
-        }
-
-        this.reconnectionTimeoutId = undefined
-        this.sentMessages = {}
-        this.lastRequestId = undefined
-        this.pendingMMRReads = undefined
-        this.ws = undefined
-    }
-
-    connect({ autoReconnectAfter = ReconnectAfter.Initial }: { autoReconnectAfter?: number } = {}) {
-        if (
-            this.getState() === CafeHubClientState.Connected ||
-            this.getState() === CafeHubClientState.Connecting
-        ) {
+    onData = (msg: RawMessage) => {
+        if (!isUpdateMessage(msg)) {
             return
         }
 
-        this.teardown()
-
-        this.ws = new WebSocket(this.url)
-
-        this.ws.onopen = () => {
-            this.eventEmitter.emit(CafeHubClientEvent.Connect)
-            this.touchState()
-        }
-
-        this.ws.onclose = (e: CloseEvent) => {
-            this.eventEmitter.emit(CafeHubClientEvent.Disconnect, e)
-            this.touchState()
-
-            if (this.autoReconnect) {
-                console.info(`Reconnecting in ${autoReconnectAfter}ms…`)
-
-                this.reconnectionTimeoutId = window.setTimeout(() => {
-                    this.connect({
-                        autoReconnectAfter: Math.min(
-                            autoReconnectAfter + ReconnectAfter.Step,
-                            ReconnectAfter.Max
-                        ),
-                    })
-                }, autoReconnectAfter)
-            }
-        }
-
-        this.ws.onerror = (e: Event) => {
-            this.eventEmitter.emit(CafeHubClientEvent.Error, e)
-            this.touchState()
-        }
-
-        this.ws.onmessage = (e: MessageEvent<string>) => {
-            let data: undefined | object
-
-            try {
-                data = JSON.parse(e.data)
-            } catch (e) {
-                // Ignore.
-            }
-
-            if (!isUpdateMessage(data)) {
+        if (msg.id === 0) {
+            if (!isGATTNotifyUpdate(msg)) {
                 return
             }
 
-            if (data.id === 0) {
-                if (!isGATTNotifyUpdate(data)) {
-                    return
-                }
-
-                this.eventEmitter.emit(CafeHubClientEvent.CharChange, data)
-
-                return
-            }
-
-            if (!this.sentMessages[data.id]) {
-                return
-            }
-
-            const { resolve, onUpdate } = this.sentMessages[data.id]
-
-            if (onUpdate(data)) {
-                resolve(data)
-            }
-
-            this.eventEmitter.emit(CafeHubClientEvent.UpdateMessage, data)
-
-            if (isScanResultUpdate(data) && data.results.MAC) {
-                this.eventEmitter.emit(CafeHubClientEvent.DeviceFound, {
-                    ...data.results,
-                    connectionState: ConnectionState.Disconnected,
-                })
-            }
+            return void this.eventEmitter.emit(CafeHubEvent.CharChange, msg)
         }
 
-        this.touchState()
-    }
+        if (!this.requests[msg.id]) {
+            // We don't have a record of sending a message with this `id`.
+            return
+        }
 
-    getState() {
-        switch (this.ws?.readyState) {
-            case WebSocket.OPEN:
-                return CafeHubClientState.Connected
-            case WebSocket.CONNECTING:
-                return CafeHubClientState.Connecting
-            case WebSocket.CLOSING:
-                return CafeHubClientState.Disconnecting
-            case WebSocket.CLOSED:
-            default:
-                return CafeHubClientState.Disconnected
+        // *Try* to resolve associated `send` promise. Possibly a noop, see `resolveIf`.
+        this.requests[msg.id].resolve(msg)
+
+        this.eventEmitter.emit(CafeHubEvent.UpdateMessage, msg)
+
+        if (isScanResultUpdate(msg) && msg.results.MAC) {
+            this.eventEmitter.emit(CafeHubEvent.DeviceFound, {
+                ...msg.results,
+                connectionState: ConnectionState.Disconnected,
+            })
         }
     }
 
-    on(eventName: CafeHubClientEvent.DeviceFound, listener: (device: Device) => void): CafeHubClient
+    constructor() {
+        this.wsc = new WebSocketClient()
 
-    on(
-        eventName: CafeHubClientEvent.UpdateMessage,
-        listener: (message: UpdateMessage) => void
-    ): CafeHubClient
+        this.wsc.on(WebSocketClientEvent.Teardown, this.onTeardown)
 
-    on(
-        eventName: CafeHubClientEvent.StateChange,
-        listener: (state: CafeHubClientState) => void
-    ): CafeHubClient
-
-    on(eventName: string | CafeHubClientEvent, listener: (...args: any[]) => void): CafeHubClient {
-        this.eventEmitter.on(eventName, listener)
-
-        return this
+        this.wsc.on(WebSocketClientEvent.Data, this.onData)
     }
 
-    once(eventName: string | CafeHubClientEvent, listener: (...args: any[]) => void) {
-        this.eventEmitter.once(eventName, listener)
-
-        return this
-    }
-
-    off(eventName: string | CafeHubClientEvent, listener: (...args: any[]) => void) {
-        this.eventEmitter.off(eventName, listener)
-
-        return this
+    async connect(url: string, { retry = 0 }: ConnectOptions = {}) {
+        return this.wsc.connect(url, { retry })
     }
 
     private nextRequestId(): number {
-        if (typeof this.lastRequestId === 'undefined') {
-            this.lastRequestId = 0
-        }
-
-        this.lastRequestId = Math.max(1, (this.lastRequestId + 1) % MaxRequestId)
+        this.lastRequestId = Math.max(1, ((this.lastRequestId || 0) + 1) % MaxRequestId)
 
         return this.lastRequestId
     }
 
-    private touchState() {
-        const currentState = this.getState()
-
-        if (currentState === this.lastKnownState) {
-            return
-        }
-
-        this.lastKnownState = currentState
-
-        this.eventEmitter.emit(CafeHubClientEvent.StateChange, currentState)
-    }
-
-    async send(
-        request: Request,
-        {
-            timeout,
-            quiet = false,
-            onUpdate,
-        }: {
-            timeout?: number
-            quiet?: boolean
-            onUpdate?: (message: UpdateMessage) => boolean
-        } = {}
-    ) {
-        if (!this.ws || this.getState() !== CafeHubClientState.Connected) {
-            console.warn('Message skipped. WebSocket not connected.', request)
-            return
-        }
-
+    async send(request: Request, { timeout, quiet = false, resolveIf }: SendOptions = {}) {
         const payload: RequestMessage = {
             ...request,
             id: this.nextRequestId(),
             type: MessageType.Request,
         }
 
-        const promiseSettlers: PromiseSettlers = {
-            resolve() {
-                throw new Error('Failed to overwrite `resolve`')
+        const { resolve, reject, promise } = await defer()
+
+        const settlers: Defer = {
+            resolve(msg: UpdateMessage) {
+                if (msg.id !== payload.id) {
+                    return
+                }
+
+                if (typeof resolveIf === 'function') {
+                    if (resolveIf(msg)) {
+                        resolve()
+                    }
+
+                    return
+                }
+
+                resolve()
             },
-            reject() {
-                throw new Error('Failed to overwrite `reject`')
-            },
-            onUpdate(message: UpdateMessage) {
-                return (
-                    message.id === payload.id &&
-                    (typeof onUpdate !== 'function' || onUpdate(message))
-                )
-            },
+            reject,
         }
 
-        let promise: undefined | Promise<UpdateMessage>
-
-        await new Promise(
-            // eslint-disable-next-line @typescript-eslint/no-unused-vars
-            (done: (_?: unknown) => void, _: () => void) => {
-                promise = new Promise((resolve: (message: UpdateMessage) => void, reject) => {
-                    Object.assign(promiseSettlers, {
-                        resolve,
-                        reject,
-                    })
-
-                    // At this point we're sure that both `promise` & `promiseSettlers` are
-                    // set correctly.
-                    done()
-                })
-            }
-        )
-
-        Object.assign(this.sentMessages, {
-            [payload.id]: promiseSettlers,
+        Object.assign(this.requests, {
+            [payload.id]: settlers,
         })
 
-        this.ws.send(JSON.stringify(payload))
+        try {
+            this.wsc.send(JSON.stringify(payload))
+        } catch (e) {
+            settlers.reject(e)
+        }
 
         if (!promise) {
-            throw new Error('Unexpected things happen all the time.')
+            throw new Error('The impossible happened, yikes!')
         }
 
         try {
-            if (typeof timeout === 'undefined') {
+            if (!timeout) {
                 await promise
             } else {
-                await Promise.race([
-                    promise,
-                    new Promise((_, reject) =>
-                        setTimeout(() => {
-                            reject(new Error('Timeout'))
-                        }, Math.max(0, timeout))
-                    ),
-                ])
+                await Promise.race([promise, delay(Math.max(0, timeout))])
             }
         } catch (e) {
             if (!quiet) {
                 throw e
             }
         } finally {
-            delete this.sentMessages[payload.id]
+            delete this.requests[payload.id]
         }
 
         return payload

@@ -1,52 +1,41 @@
-import dts from "rollup-plugin-dts";
-import esbuild from "rollup-plugin-esbuild";
+import dts from 'rollup-plugin-dts'
+import esbuild from 'rollup-plugin-esbuild'
 
 function bundle(config) {
-  return {
-    ...config,
-    external: ["events"],
-  };
+    return {
+        ...config,
+        external: ['events'],
+    }
+}
+
+function pair(name, as = name) {
+    return [
+        bundle({
+            input: `src/${name}.ts`,
+            plugins: [esbuild()],
+            output: [
+                {
+                    file: `${as}.mjs`,
+                    format: 'es',
+                },
+            ],
+        }),
+        bundle({
+            input: `src/${name}.ts`,
+            plugins: [dts()],
+            output: [
+                {
+                    file: `${as}.d.ts`,
+                    format: 'es',
+                },
+            ],
+        }),
+    ]
 }
 
 export default [
-  bundle({
-    input: "src/index.ts",
-    plugins: [esbuild()],
-    output: [
-      {
-        file: `index.mjs`,
-        format: "es",
-      },
-    ],
-  }),
-  bundle({
-    input: "src/index.ts",
-    plugins: [dts()],
-    output: [
-      {
-        file: `index.d.ts`,
-        format: "es",
-      },
-    ],
-  }),
-  bundle({
-    input: "src/types.ts",
-    plugins: [esbuild()],
-    output: [
-      {
-        file: `types.mjs`,
-        format: "es",
-      },
-    ],
-  }),
-  bundle({
-    input: "src/types.ts",
-    plugins: [dts()],
-    output: [
-      {
-        file: `types.d.ts`,
-        format: "es",
-      },
-    ],
-  }),
-];
+    ...pair('index'),
+    ...pair('types'),
+    ...pair('utils/index', 'utils'),
+    ...pair('errors/index', 'errors'),
+]

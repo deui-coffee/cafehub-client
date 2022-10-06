@@ -28,6 +28,10 @@
         "index.d.ts",
         "index.mjs",
         "types.d.ts",
-        "types.mjs"
+        "types.mjs",
+        "errors.d.ts",
+        "errors.mjs",
+        "utils.d.ts",
+        "utils.mjs"
     ]
 }

@@ -15,9 +15,17 @@ export enum MessageType {
     Update = 'UPDATE',
 }
 
-export interface Message {
+export type RawMessage = Record<string, unknown>
+
+export interface Message extends RawMessage {
     id: number
     type: MessageType
+}
+
+export interface UpdateMessage<T = unknown, R = unknown> extends Message {
+    type: MessageType.Update
+    update: T
+    results: R
 }
 
 export enum UpdateType {
@@ -40,22 +48,22 @@ export interface UpdateMessage<T = unknown, R = unknown> extends Message {
     results: R
 }
 
-export function isUpdateMessage(msg: unknown): msg is UpdateMessage {
-    return !!msg && typeof msg === 'object' && 'id' in msg && 'update' in msg
+export function isMessage(msg: RawMessage): msg is Message {
+    return typeof msg.id === 'number'
 }
 
-export type ScanResultUpdate = UpdateMessage<
-    UpdateType.ScanResult,
-    {
-        MAC: string
-        Name: string
-        UUIDs: [string]
-    }
->
+export function isUpdateMessage(msg: RawMessage): msg is UpdateMessage {
+    return isMessage(msg) && msg.type === MessageType.Update
+}
 
-export type Device = ScanResultUpdate['results'] & {
+export interface Device {
+    MAC: string
+    Name: string
+    UUIDs: [string]
     connectionState: ConnectionState
 }
+
+export type ScanResultUpdate = UpdateMessage<UpdateType.ScanResult, Omit<Device, 'connectionState'>>
 
 export function isScanResultUpdate(message: UpdateMessage): message is ScanResultUpdate {
     return message.update === UpdateType.ScanResult
@@ -71,7 +79,7 @@ export type GATTNotifyUpdate = UpdateMessage<
 >
 
 export function isGATTNotifyUpdate(msg: UpdateMessage): msg is GATTNotifyUpdate {
-    return msg.id === 0 && msg.type === MessageType.Update && msg.update === UpdateType.GATTNotify
+    return msg.update === UpdateType.GATTNotify
 }
 
 type ConnectionStateUpdate = UpdateMessage<
@@ -205,4 +213,42 @@ export enum CharAddr {
     FrameWrite /*     */ = '0000a010-0000-1000-8000-00805f9b34fb', // P RW   FrameWrite Use this to change a single frame in the current shot description
     WaterLevels /*    */ = '0000a011-0000-1000-8000-00805f9b34fb', // Q RW   WaterLevels Use this to adjust and read water level settings
     Calibration /*    */ = '0000a012-0000-1000-8000-00805f9b34fb', // R RW   Calibration Use this to adjust and read calibration
+}
+
+export enum WebSocketClientEvent {
+    Connect = 'connect',
+    Data = 'data',
+    Disconnect = 'disconnect',
+    Error = 'error',
+    StateChange = 'stateChange',
+    Teardown = 'teardown',
+}
+
+export enum WebSocketClientState {
+    Connected = 'connected',
+    Connecting = 'connecting',
+    Disconnected = 'disconnected',
+}
+
+export interface Defer {
+    resolve: (msg: UpdateMessage) => void
+    reject: (reason?: unknown) => void
+}
+
+export type Requests = Record<string, Defer>
+
+export enum CafeHubEvent {
+    CharChange = 'CharChange',
+    UpdateMessage = 'UpdateMessage',
+    DeviceFound = 'DeviceFound',
+}
+
+export interface SendOptions {
+    timeout?: number
+    quiet?: boolean
+    resolveIf?: (msg: UpdateMessage) => boolean
+}
+
+export interface ConnectOptions {
+    retry?: boolean | number
 }
