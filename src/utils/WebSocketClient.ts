@@ -10,9 +10,11 @@ const ReconnectAfter = {
     Max: 10000,
 }
 
-export default class WebSocketClient {
-    private readonly eventEmitter: EventEmitter = new EventEmitter()
+function isWebSocket(target: unknown): target is WebSocket {
+    return target instanceof WebSocket
+}
 
+export default class WebSocketClient extends EventEmitter {
     private ws: undefined | WebSocket
 
     private abortController: undefined | AbortController
@@ -26,7 +28,7 @@ export default class WebSocketClient {
     private setState(state: WebSocketClientState) {
         if (this.state !== state) {
             this.state = state
-            this.eventEmitter.emit(WebSocketClientEvent.StateChange, state)
+            this.emit(WebSocketClientEvent.StateChange, state)
         }
     }
 
@@ -45,7 +47,7 @@ export default class WebSocketClient {
 
         this.abortController = new AbortController()
 
-        this.eventEmitter.emit(WebSocketClientEvent.Teardown)
+        this.emit(WebSocketClientEvent.Teardown)
     }
 
     private onMessage = (e: MessageEvent<string>) => {
@@ -62,17 +64,15 @@ export default class WebSocketClient {
             return
         }
 
-        this.eventEmitter.emit(WebSocketClientEvent.Data, data)
+        this.emit(WebSocketClientEvent.Data, data)
     }
 
     private onClose = async (e: CloseEvent) => {
-        this.eventEmitter.emit(WebSocketClientEvent.Disconnect, e)
+        this.emit(WebSocketClientEvent.Disconnect, e)
 
-        function isWs(target: unknown): target is WebSocket {
-            return !!target
-        }
+        this.teardown()
 
-        if (isWs(e.currentTarget)) {
+        if (isWebSocket(e.currentTarget)) {
             try {
                 await this.connect(e.currentTarget.url, {
                     retry: true,
@@ -106,7 +106,7 @@ export default class WebSocketClient {
                 ws = await connectUtil(url, {
                     abortSignal: this.abortController?.signal,
                     onError: (e: Event) => {
-                        this.eventEmitter.emit(WebSocketClientEvent.Error, e)
+                        this.emit(WebSocketClientEvent.Error, e)
                     },
                 })
 
@@ -116,7 +116,7 @@ export default class WebSocketClient {
 
                 this.setState(WebSocketClientState.Connected)
 
-                this.eventEmitter.emit(WebSocketClientEvent.Connect)
+                this.emit(WebSocketClientEvent.Connect)
 
                 ws.addEventListener('message', this.onMessage)
 
@@ -129,7 +129,7 @@ export default class WebSocketClient {
                 }
 
                 if (e instanceof CloseEvent) {
-                    this.eventEmitter.emit(WebSocketClientEvent.Disconnect, e)
+                    this.emit(WebSocketClientEvent.Disconnect, e)
 
                     if (retry === true || (typeof retry === 'number' && retryCount < retry)) {
                         reanimateAfter = Math.min(
@@ -156,80 +156,5 @@ export default class WebSocketClient {
         }
 
         this.ws.send(data)
-    }
-
-    on(eventName: WebSocketClientEvent.Connect, listener: () => void): WebSocketClient
-
-    on(
-        eventName: WebSocketClientEvent.Data,
-        listener: (data: Record<string, unknown>) => void
-    ): WebSocketClient
-
-    on(eventName: WebSocketClientEvent.Disconnect, listener: () => void): WebSocketClient
-
-    on(eventName: WebSocketClientEvent.Error, listener: (error: Error) => void): WebSocketClient
-
-    on(
-        eventName: WebSocketClientEvent.StateChange,
-        listener: (state: WebSocketClientState) => void
-    ): WebSocketClient
-
-    on(eventName: WebSocketClientEvent.Teardown, listener: () => void): WebSocketClient
-
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    on(eventName: WebSocketClientEvent, listener: (...args: any[]) => void) {
-        this.eventEmitter.on(eventName, listener)
-
-        return this
-    }
-
-    once(eventName: WebSocketClientEvent.Connect, listener: () => void): WebSocketClient
-
-    once(
-        eventName: WebSocketClientEvent.Data,
-        listener: (data: Record<string, unknown>) => void
-    ): WebSocketClient
-
-    once(eventName: WebSocketClientEvent.Disconnect, listener: () => void): WebSocketClient
-
-    once(eventName: WebSocketClientEvent.Error, listener: (error: Error) => void): WebSocketClient
-
-    once(
-        eventName: WebSocketClientEvent.StateChange,
-        listener: (state: WebSocketClientState) => void
-    ): WebSocketClient
-
-    once(eventName: WebSocketClientEvent.Teardown, listener: () => void): WebSocketClient
-
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    once(eventName: WebSocketClientEvent, listener: (...args: any[]) => void) {
-        this.eventEmitter.once(eventName, listener)
-
-        return this
-    }
-
-    off(eventName: WebSocketClientEvent.Connect, listener: () => void): WebSocketClient
-
-    off(
-        eventName: WebSocketClientEvent.Data,
-        listener: (data: Record<string, unknown>) => void
-    ): WebSocketClient
-
-    off(eventName: WebSocketClientEvent.Disconnect, listener: () => void): WebSocketClient
-
-    off(eventName: WebSocketClientEvent.Error, listener: (error: Error) => void): WebSocketClient
-
-    off(
-        eventName: WebSocketClientEvent.StateChange,
-        listener: (state: WebSocketClientState) => void
-    ): WebSocketClient
-
-    off(eventName: WebSocketClientEvent.Teardown, listener: () => void): WebSocketClient
-
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    off(eventName: WebSocketClientEvent, listener: (...args: any[]) => void) {
-        this.eventEmitter.off(eventName, listener)
-
-        return this
     }
 }

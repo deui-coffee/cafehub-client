@@ -225,9 +225,9 @@ export enum WebSocketClientEvent {
 }
 
 export enum WebSocketClientState {
-    Connected = 'connected',
-    Connecting = 'connecting',
-    Disconnected = 'disconnected',
+    Connected = 'webSocketClient/connected',
+    Connecting = 'webSocketClient/connecting',
+    Disconnected = 'webSocketClient/disconnected',
 }
 
 export interface Defer {
@@ -238,9 +238,9 @@ export interface Defer {
 export type Requests = Record<string, Defer>
 
 export enum CafeHubEvent {
-    CharChange = 'CharChange',
-    UpdateMessage = 'UpdateMessage',
-    DeviceFound = 'DeviceFound',
+    CharChange = 'cafeHub/charChange',
+    DeviceFound = 'cafeHub/deviceFound',
+    UpdateMessage = 'cafeHub/updateMessage',
 }
 
 export interface SendOptions {
