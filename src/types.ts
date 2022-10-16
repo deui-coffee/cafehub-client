@@ -172,28 +172,6 @@ export interface RequestMessage<P = unknown> extends Message {
     params: P
 }
 
-export enum CafeHubClientEvent {
-    Connect = 'CONNECT',
-    UpdateMessage = 'UPDATE_MESSAGE',
-    DeviceFound = 'DEVICE_FOUND',
-    Disconnect = 'DISCONNECT',
-    Error = 'ERROR',
-    CharChange = 'CHAR_CHANGE',
-    StateChange = 'STATE_CHANGE',
-}
-
-export enum CafeHubClientState {
-    Disconnected = WebSocket.CLOSED,
-    Connecting = WebSocket.CONNECTING,
-    Connected = WebSocket.OPEN,
-    Disconnecting = WebSocket.CLOSING,
-}
-
-export interface CafeHubClientOptions {
-    autoConnect?: boolean
-    autoReconnect?: boolean
-}
-
 export enum CharAddr {
     Versions /*       */ = '0000a001-0000-1000-8000-00805f9b34fb', // A R    Versions See T_Versions
     RequestedState /* */ = '0000a002-0000-1000-8000-00805f9b34fb', // B RW   RequestedState See T_RequestedState
@@ -215,19 +193,10 @@ export enum CharAddr {
     Calibration /*    */ = '0000a012-0000-1000-8000-00805f9b34fb', // R RW   Calibration Use this to adjust and read calibration
 }
 
-export enum WebSocketClientEvent {
-    Connect = 'connect',
-    Data = 'data',
-    Disconnect = 'disconnect',
-    Error = 'error',
-    StateChange = 'stateChange',
-    Teardown = 'teardown',
-}
-
-export enum WebSocketClientState {
-    Connected = 'webSocketClient/connected',
-    Connecting = 'webSocketClient/connecting',
-    Disconnected = 'webSocketClient/disconnected',
+export enum CafeHubState {
+    Connected = 'connected',
+    Connecting = 'connecting',
+    Disconnected = 'disconnected',
 }
 
 export interface Defer {
@@ -238,9 +207,15 @@ export interface Defer {
 export type Requests = Record<string, Defer>
 
 export enum CafeHubEvent {
-    CharChange = 'cafeHub/charChange',
-    DeviceFound = 'cafeHub/deviceFound',
-    UpdateMessage = 'cafeHub/updateMessage',
+    CharChange = 'charChange',
+    Connect = 'connect',
+    Data = 'data',
+    DeviceFound = 'deviceFound',
+    Disconnect = 'disconnect',
+    Error = 'error',
+    StateChange = 'stateChange',
+    Teardown = 'teardown',
+    UpdateMessage = 'updateMessage',
 }
 
 export interface SendOptions {

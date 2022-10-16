@@ -2,6 +2,7 @@ import { EventEmitter } from 'events'
 import AbortError from './errors/AbortError'
 import {
     CafeHubEvent,
+    CafeHubState,
     ConnectionState,
     ConnectOptions,
     Defer,
@@ -15,27 +16,173 @@ import {
     Requests,
     SendOptions,
     UpdateMessage,
-    WebSocketClientEvent,
-    WebSocketClientState,
 } from './types'
 import defer from './utils/defer'
 import delay from './utils/delay'
-import WebSocketClient from './utils/WebSocketClient'
+import connectUtil from './utils/connect'
+import SocketNotReadyError from './errors/SocketNotReadyError'
 
 const MaxRequestId = 1000000000
 
-export default class CafeHubClient extends WebSocketClient {
+const ReconnectAfter = {
+    Step: 250,
+    Max: 10000,
+}
+
+export default class CafeHubClient extends EventEmitter {
     private lastRequestId: undefined | number
 
     private requests: Requests = {}
 
-    onTeardown = () => {
+    private ws: undefined | WebSocket
+
+    private abortController: undefined | AbortController
+
+    private state: CafeHubState = CafeHubState.Disconnected
+
+    getState() {
+        return this.state
+    }
+
+    private setState(state: CafeHubState) {
+        if (this.state !== state) {
+            this.state = state
+            this.emit(CafeHubEvent.StateChange, state)
+        }
+    }
+
+    teardown() {
+        this.ws?.removeEventListener('message', this.onMessage)
+
+        this.ws?.removeEventListener('close', this.onClose)
+
+        this.ws?.close()
+
+        this.ws = undefined
+
+        this.setState(CafeHubState.Disconnected)
+
+        this.abortController?.abort()
+
+        this.abortController = new AbortController()
+
         // Skip all remaining requests.
         Object.keys(this.requests).forEach(
             (key) => void this.requests[key].reject(new AbortError())
         )
 
         this.requests = {}
+
+        this.emit(CafeHubEvent.Teardown)
+    }
+
+    private onMessage = (e: MessageEvent<string>) => {
+        let data: undefined | Record<string, unknown>
+
+        try {
+            data = JSON.parse(e.data)
+
+            if (data !== Object(data)) {
+                // Filter out primitives.
+                return
+            }
+        } catch (e) {
+            return
+        }
+
+        this.emit(CafeHubEvent.Data, data)
+    }
+
+    private onClose = async (e: CloseEvent) => {
+        this.emit(CafeHubEvent.Disconnect, e)
+
+        this.teardown()
+
+        if (e.currentTarget instanceof WebSocket) {
+            try {
+                await this.connect(e.currentTarget.url, {
+                    retry: true,
+                })
+            } catch (e) {
+                this.setState(CafeHubState.Disconnected)
+            }
+        }
+    }
+
+    async connect(url: string, { retry = 0 }: ConnectOptions = {}) {
+        this.teardown()
+
+        this.setState(CafeHubState.Connecting)
+
+        let ws: WebSocket
+
+        let reanimateAfter: undefined | number
+
+        let retryCount = 0
+
+        // eslint-disable-next-line no-constant-condition
+        while (true) {
+            try {
+                if (typeof reanimateAfter === 'number') {
+                    console.info(`Reconnecting in ${reanimateAfter}ms…`)
+
+                    await delay(reanimateAfter, { abortSignal: this.abortController?.signal })
+                }
+
+                ws = await connectUtil(url, {
+                    abortSignal: this.abortController?.signal,
+                    onError: (e: Event) => {
+                        this.emit(CafeHubEvent.Error, e)
+                    },
+                })
+
+                // We're connected. AbortController is no longer needed.
+                this.abortController = undefined
+
+                this.ws = ws
+
+                this.setState(CafeHubState.Connected)
+
+                this.emit(CafeHubEvent.Connect)
+
+                ws.addEventListener('message', this.onMessage)
+
+                ws.addEventListener('close', this.onClose)
+
+                break
+            } catch (e) {
+                if (e instanceof AbortError) {
+                    break
+                }
+
+                if (e instanceof CloseEvent) {
+                    this.emit(CafeHubEvent.Disconnect, e)
+
+                    if (retry === true || (typeof retry === 'number' && retryCount < retry)) {
+                        reanimateAfter = Math.min(
+                            (reanimateAfter || 0) + ReconnectAfter.Step,
+                            ReconnectAfter.Max
+                        )
+
+                        retryCount++
+
+                        continue
+                    }
+
+                    this.setState(CafeHubState.Disconnected)
+                }
+
+                throw e
+            }
+        }
+    }
+
+    send(data: string) {
+        if (!this.ws || this.getState() !== CafeHubState.Connected) {
+            throw new SocketNotReadyError()
+        }
+
+        this.ws.send(data)
     }
 
     onData = (msg: RawMessage) => {
@@ -72,9 +219,7 @@ export default class CafeHubClient extends WebSocketClient {
     constructor() {
         super()
 
-        this.on(WebSocketClientEvent.Data, this.onData)
-
-        this.on(WebSocketClientEvent.Teardown, this.onTeardown)
+        this.on(CafeHubEvent.Data, this.onData)
     }
 
     private nextRequestId(): number {
@@ -121,10 +266,6 @@ export default class CafeHubClient extends WebSocketClient {
             settlers.reject(e)
         }
 
-        if (!promise) {
-            throw new Error('The impossible happened, yikes!')
-        }
-
         try {
             if (!timeout) {
                 await promise
@@ -142,67 +283,49 @@ export default class CafeHubClient extends WebSocketClient {
         return payload
     }
 
-    on(eventName: WebSocketClientEvent.Connect, listener: () => void): this
+    on(eventName: CafeHubEvent.Connect, listener: () => void): this
 
-    on(
-        eventName: WebSocketClientEvent.Data,
-        listener: (data: Record<string, unknown>) => void
-    ): this
+    on(eventName: CafeHubEvent.Data, listener: (data: Record<string, unknown>) => void): this
 
-    on(eventName: WebSocketClientEvent.Disconnect, listener: () => void): this
+    on(eventName: CafeHubEvent.Disconnect, listener: () => void): this
 
-    on(eventName: WebSocketClientEvent.Error, listener: (error: Error) => void): this
+    on(eventName: CafeHubEvent.Error, listener: (error: Error) => void): this
 
-    on(
-        eventName: WebSocketClientEvent.StateChange,
-        listener: (state: WebSocketClientState) => void
-    ): this
+    on(eventName: CafeHubEvent.StateChange, listener: (state: CafeHubState) => void): this
 
-    on(eventName: WebSocketClientEvent.Teardown, listener: () => void): this
+    on(eventName: CafeHubEvent.Teardown, listener: () => void): this
 
     on(eventName: string, listener: (...args: any[]) => void) {
         return super.on(eventName, listener)
     }
 
-    once(eventName: WebSocketClientEvent.Connect, listener: () => void): this
+    once(eventName: CafeHubEvent.Connect, listener: () => void): this
 
-    once(
-        eventName: WebSocketClientEvent.Data,
-        listener: (data: Record<string, unknown>) => void
-    ): this
+    once(eventName: CafeHubEvent.Data, listener: (data: Record<string, unknown>) => void): this
 
-    once(eventName: WebSocketClientEvent.Disconnect, listener: () => void): this
+    once(eventName: CafeHubEvent.Disconnect, listener: () => void): this
 
-    once(eventName: WebSocketClientEvent.Error, listener: (error: Error) => void): this
+    once(eventName: CafeHubEvent.Error, listener: (error: Error) => void): this
 
-    once(
-        eventName: WebSocketClientEvent.StateChange,
-        listener: (state: WebSocketClientState) => void
-    ): this
+    once(eventName: CafeHubEvent.StateChange, listener: (state: CafeHubState) => void): this
 
-    once(eventName: WebSocketClientEvent.Teardown, listener: () => void): this
+    once(eventName: CafeHubEvent.Teardown, listener: () => void): this
 
     once(eventName: string, listener: (...args: any[]) => void) {
         return super.once(eventName, listener)
     }
 
-    off(eventName: WebSocketClientEvent.Connect, listener: () => void): this
+    off(eventName: CafeHubEvent.Connect, listener: () => void): this
 
-    off(
-        eventName: WebSocketClientEvent.Data,
-        listener: (data: Record<string, unknown>) => void
-    ): this
+    off(eventName: CafeHubEvent.Data, listener: (data: Record<string, unknown>) => void): this
 
-    off(eventName: WebSocketClientEvent.Disconnect, listener: () => void): this
+    off(eventName: CafeHubEvent.Disconnect, listener: () => void): this
 
-    off(eventName: WebSocketClientEvent.Error, listener: (error: Error) => void): this
+    off(eventName: CafeHubEvent.Error, listener: (error: Error) => void): this
 
-    off(
-        eventName: WebSocketClientEvent.StateChange,
-        listener: (state: WebSocketClientState) => void
-    ): this
+    off(eventName: CafeHubEvent.StateChange, listener: (state: CafeHubState) => void): this
 
-    off(eventName: WebSocketClientEvent.Teardown, listener: () => void): this
+    off(eventName: CafeHubEvent.Teardown, listener: () => void): this
 
     off(eventName: string, listener: (...args: any[]) => void) {
         return super.off(eventName, listener)
