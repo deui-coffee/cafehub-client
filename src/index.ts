@@ -278,7 +278,10 @@ export default class CafeHubClient extends EventEmitter {
                 ])
             }
         } catch (e) {
+            // Proactively reject the outstanding settler.
             settlers.reject(e)
+
+            throw e
         } finally {
             delete this.requests[payload.id]
         }
