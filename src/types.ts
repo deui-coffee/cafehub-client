@@ -220,7 +220,6 @@ export enum CafeHubEvent {
 
 export interface SendOptions {
     timeout?: number
-    quiet?: boolean
     resolveIf?: (msg: UpdateMessage) => boolean
 }
 

@@ -4,7 +4,9 @@
     "description": "CafeHub websocket client",
     "exports": {
         ".": "./index.mjs",
-        "./types": "./types.mjs"
+        "./types": "./types.mjs",
+        "./errors": "./errors.mjs",
+        "./utils": "./utils.mjs"
     },
     "scripts": {
         "prettier": "prettier --write src",

@@ -6,6 +6,8 @@ import {
     ConnectionState,
     ConnectOptions,
     Defer,
+    Device,
+    GATTNotifyUpdate,
     isGATTNotifyUpdate,
     isScanResultUpdate,
     isUpdateMessage,
@@ -21,6 +23,7 @@ import defer from './utils/defer'
 import delay from './utils/delay'
 import connectUtil from './utils/connect'
 import SocketNotReadyError from './errors/SocketNotReadyError'
+import TimeoutError from './errors/TimeoutError'
 
 const MaxRequestId = 1000000000
 
@@ -228,14 +231,14 @@ export default class CafeHubClient extends EventEmitter {
         return this.lastRequestId
     }
 
-    async sendRequest(request: Request, { timeout, quiet = false, resolveIf }: SendOptions = {}) {
+    async sendRequest(request: Request, { timeout, resolveIf }: SendOptions = {}) {
         const payload: RequestMessage = {
             ...request,
             id: this.nextRequestId(),
             type: MessageType.Request,
         }
 
-        const { resolve, reject, promise } = await defer()
+        const { resolve, reject, promise } = await defer<UpdateMessage>()
 
         const settlers: Defer = {
             resolve(msg: UpdateMessage) {
@@ -245,13 +248,13 @@ export default class CafeHubClient extends EventEmitter {
 
                 if (typeof resolveIf === 'function') {
                     if (resolveIf(msg)) {
-                        resolve()
+                        resolve(msg)
                     }
 
                     return
                 }
 
-                resolve()
+                resolve(msg)
             },
             reject,
         }
@@ -261,31 +264,33 @@ export default class CafeHubClient extends EventEmitter {
         })
 
         try {
+            // If the client isn't ready this will throw.
             this.send(JSON.stringify(payload))
+
+            if (!timeout) {
+                return await promise
+            } else {
+                return await Promise.race([
+                    promise,
+                    delay(Math.max(0, timeout)).then(() => {
+                        throw new TimeoutError()
+                    }),
+                ])
+            }
         } catch (e) {
             settlers.reject(e)
-        }
-
-        try {
-            if (!timeout) {
-                await promise
-            } else {
-                await Promise.race([promise, delay(Math.max(0, timeout))])
-            }
-        } catch (e) {
-            if (!quiet) {
-                throw e
-            }
         } finally {
             delete this.requests[payload.id]
         }
-
-        return payload
     }
+
+    on(eventName: CafeHubEvent.CharChange, listener: (message: GATTNotifyUpdate) => void): this
 
     on(eventName: CafeHubEvent.Connect, listener: () => void): this
 
     on(eventName: CafeHubEvent.Data, listener: (data: Record<string, unknown>) => void): this
+
+    on(eventName: CafeHubEvent.DeviceFound, listener: (device: Device) => void): this
 
     on(eventName: CafeHubEvent.Disconnect, listener: () => void): this
 
@@ -295,13 +300,19 @@ export default class CafeHubClient extends EventEmitter {
 
     on(eventName: CafeHubEvent.Teardown, listener: () => void): this
 
+    on(eventName: CafeHubEvent.UpdateMessage, listener: (message: UpdateMessage) => void): this
+
     on(eventName: string, listener: (...args: any[]) => void) {
         return super.on(eventName, listener)
     }
 
+    once(eventName: CafeHubEvent.CharChange, listener: (message: GATTNotifyUpdate) => void): this
+
     once(eventName: CafeHubEvent.Connect, listener: () => void): this
 
     once(eventName: CafeHubEvent.Data, listener: (data: Record<string, unknown>) => void): this
+
+    once(eventName: CafeHubEvent.DeviceFound, listener: (device: Device) => void): this
 
     once(eventName: CafeHubEvent.Disconnect, listener: () => void): this
 
@@ -311,13 +322,19 @@ export default class CafeHubClient extends EventEmitter {
 
     once(eventName: CafeHubEvent.Teardown, listener: () => void): this
 
+    once(eventName: CafeHubEvent.UpdateMessage, listener: (message: UpdateMessage) => void): this
+
     once(eventName: string, listener: (...args: any[]) => void) {
         return super.once(eventName, listener)
     }
 
+    off(eventName: CafeHubEvent.CharChange, listener: (message: GATTNotifyUpdate) => void): this
+
     off(eventName: CafeHubEvent.Connect, listener: () => void): this
 
     off(eventName: CafeHubEvent.Data, listener: (data: Record<string, unknown>) => void): this
+
+    off(eventName: CafeHubEvent.DeviceFound, listener: (device: Device) => void): this
 
     off(eventName: CafeHubEvent.Disconnect, listener: () => void): this
 
@@ -326,6 +343,8 @@ export default class CafeHubClient extends EventEmitter {
     off(eventName: CafeHubEvent.StateChange, listener: (state: CafeHubState) => void): this
 
     off(eventName: CafeHubEvent.Teardown, listener: () => void): this
+
+    off(eventName: CafeHubEvent.UpdateMessage, listener: (message: UpdateMessage) => void): this
 
     off(eventName: string, listener: (...args: any[]) => void) {
         return super.off(eventName, listener)
