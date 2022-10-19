@@ -91,6 +91,10 @@ type ConnectionStateUpdate = UpdateMessage<
     }
 >
 
+export function isConnectionStateUpdate(msg: UpdateMessage): msg is ConnectionStateUpdate {
+    return msg.update === UpdateType.ConnectionState
+}
+
 interface ResponseError {
     eid: number
     errmsg: string
