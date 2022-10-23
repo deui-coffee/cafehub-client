@@ -101,6 +101,10 @@ export default class CafeHubClient extends EventEmitter {
 
         this.teardown()
 
+        if (e.code === 1000 && e.wasClean) {
+            return void this.setState(CafeHubState.Disconnected)
+        }
+
         if (e.currentTarget instanceof WebSocket) {
             try {
                 await this.connect(e.currentTarget.url, {
