@@ -4,13 +4,13 @@ import {
     CafeHubEvent,
     CafeHubState,
     ConnectionState,
-    ConnectOptions,
     Defer,
     Device,
     GATTNotifyUpdate,
     isGATTNotifyUpdate,
     isScanResultUpdate,
     isUpdateMessage,
+    Message,
     MessageType,
     RawMessage,
     Request,
@@ -84,12 +84,10 @@ export default class CafeHubClient extends EventEmitter {
 
         try {
             data = JSON.parse(e.data)
+        } catch (e) {}
 
-            if (data !== Object(data)) {
-                // Filter out primitives.
-                return
-            }
-        } catch (e) {
+        if (data !== Object(data)) {
+            // Filter out primitives.
             return
         }
 
@@ -100,88 +98,32 @@ export default class CafeHubClient extends EventEmitter {
         this.emit(CafeHubEvent.Disconnect, e)
 
         this.teardown()
-
-        if (e.code === 1000 && e.wasClean) {
-            return void this.setState(CafeHubState.Disconnected)
-        }
-
-        if (e.currentTarget instanceof WebSocket) {
-            try {
-                await this.connect(e.currentTarget.url, {
-                    retry: true,
-                })
-            } catch (e) {
-                this.setState(CafeHubState.Disconnected)
-            }
-        }
     }
 
-    async connect(url: string, { retry = 0 }: ConnectOptions = {}) {
+    async connect(url: string) {
         this.teardown()
 
         this.setState(CafeHubState.Connecting)
 
-        let ws: WebSocket
+        let ws: WebSocket = await connectUtil(url, {
+            abortSignal: this.abortController?.signal,
+            onError: (e: Event) => {
+                this.emit(CafeHubEvent.Error, e)
+            },
+        })
 
-        let reanimateAfter: undefined | number
+        // We're connected. AbortController is no longer needed.
+        this.abortController = undefined
 
-        let retryCount = 0
+        this.ws = ws
 
-        // eslint-disable-next-line no-constant-condition
-        while (true) {
-            try {
-                if (typeof reanimateAfter === 'number') {
-                    console.info(`Reconnecting in ${reanimateAfter}ms…`)
+        this.setState(CafeHubState.Connected)
 
-                    await delay(reanimateAfter, { abortSignal: this.abortController?.signal })
-                }
+        this.emit(CafeHubEvent.Connect)
 
-                ws = await connectUtil(url, {
-                    abortSignal: this.abortController?.signal,
-                    onError: (e: Event) => {
-                        this.emit(CafeHubEvent.Error, e)
-                    },
-                })
+        ws.addEventListener('message', this.onMessage)
 
-                // We're connected. AbortController is no longer needed.
-                this.abortController = undefined
-
-                this.ws = ws
-
-                this.setState(CafeHubState.Connected)
-
-                this.emit(CafeHubEvent.Connect)
-
-                ws.addEventListener('message', this.onMessage)
-
-                ws.addEventListener('close', this.onClose)
-
-                break
-            } catch (e) {
-                if (e instanceof AbortError) {
-                    break
-                }
-
-                if (e instanceof CloseEvent) {
-                    this.emit(CafeHubEvent.Disconnect, e)
-
-                    if (retry === true || (typeof retry === 'number' && retryCount < retry)) {
-                        reanimateAfter = Math.min(
-                            (reanimateAfter || 0) + ReconnectAfter.Step,
-                            ReconnectAfter.Max
-                        )
-
-                        retryCount++
-
-                        continue
-                    }
-
-                    this.setState(CafeHubState.Disconnected)
-                }
-
-                throw e
-            }
-        }
+        ws.addEventListener('close', this.onClose)
     }
 
     send(data: string) {
@@ -235,17 +177,17 @@ export default class CafeHubClient extends EventEmitter {
         return this.lastRequestId
     }
 
-    async sendRequest(request: Request, { timeout, resolveIf }: SendOptions = {}) {
+    async sendRequest(request: Request, { timeout, resolveIf, onBeforeSend }: SendOptions = {}) {
         const payload: RequestMessage = {
             ...request,
             id: this.nextRequestId(),
             type: MessageType.Request,
         }
 
-        const { resolve, reject, promise } = await defer<UpdateMessage>()
+        const { resolve, reject, promise } = await defer<Message>()
 
         const settlers: Defer = {
-            resolve(msg: UpdateMessage) {
+            resolve(msg: Message) {
                 if (msg.id !== payload.id) {
                     return
                 }
@@ -268,6 +210,10 @@ export default class CafeHubClient extends EventEmitter {
         })
 
         try {
+            if (typeof onBeforeSend === 'function') {
+                onBeforeSend(payload)
+            }
+
             // If the client isn't ready this will throw.
             this.send(JSON.stringify(payload))
 

@@ -73,7 +73,7 @@ export type GATTNotifyUpdate = UpdateMessage<
     UpdateType.GATTNotify,
     {
         MAC: string
-        Char: string
+        Char: CharAddr
         Data: Base64String
     }
 >
@@ -82,7 +82,7 @@ export function isGATTNotifyUpdate(msg: UpdateMessage): msg is GATTNotifyUpdate 
     return msg.update === UpdateType.GATTNotify
 }
 
-type ConnectionStateUpdate = UpdateMessage<
+export type ConnectionStateUpdate = UpdateMessage<
     UpdateType.ConnectionState,
     {
         MAC: string
@@ -100,21 +100,25 @@ interface ResponseError {
     errmsg: string
 }
 
-type ErrorUpdate = UpdateMessage<UpdateType.ExecutionError, ResponseError>
+export type ErrorUpdate = UpdateMessage<UpdateType.ExecutionError, ResponseError>
+
+export function isErrorUpdate(msg: UpdateMessage): msg is ErrorUpdate {
+    return msg.update === UpdateType.ExecutionError
+}
 
 export type Update = ScanResultUpdate | GATTNotifyUpdate | ConnectionStateUpdate | ErrorUpdate
 
-export interface ResponseMessage<T = unknown> extends Message {
+export interface GATTReadResponse extends Message {
     type: MessageType.Response
     error: ResponseError
-    results: T
+    results: {
+        Data: Base64String
+    }
 }
 
-interface GATTReadResult {
-    Data: Base64String
+export function isGATTReadResponse(msg: RawMessage): msg is GATTReadResponse {
+    return isMessage(msg) && msg.type === MessageType.Response
 }
-
-export type GATTReadResponse = ResponseMessage<GATTReadResult>
 
 interface Req<C, P> {
     command: C
@@ -148,8 +152,8 @@ type GATTWriteRequest = Req<
     RequestCommand.GATTWrite,
     {
         MAC: string
-        Char: string
-        Data: ArrayBufferLike
+        Char: CharAddr
+        Data: Base64String
         RR: boolean
     }
 >
@@ -158,7 +162,7 @@ type GATTSetNotifyRequest = Req<
     RequestCommand.GATTSetNotify,
     {
         MAC: string
-        Char: string
+        Char: CharAddr
         Enable: boolean
     }
 >
@@ -204,7 +208,7 @@ export enum CafeHubState {
 }
 
 export interface Defer {
-    resolve: (msg: UpdateMessage) => void
+    resolve: (msg: Message) => void
     reject: (reason?: unknown) => void
 }
 
@@ -224,9 +228,7 @@ export enum CafeHubEvent {
 
 export interface SendOptions {
     timeout?: number
-    resolveIf?: (msg: UpdateMessage) => boolean
-}
-
-export interface ConnectOptions {
-    retry?: boolean | number
+    resolveIf?: (msg: Message) => boolean
+    onBeforeSend?: (msg: RequestMessage) => void
+    abort?: AbortSignal
 }

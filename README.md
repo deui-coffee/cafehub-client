@@ -44,7 +44,7 @@ async function autoPair() {
 
     console.log('Looking for DE1…')
 
-    const msg: UpdateMessage = await client.sendRequest(
+    const msg: UpdateMessage = await ch.sendRequest(
         {
             command: RequestCommand.Scan,
             params: {
@@ -68,7 +68,7 @@ async function autoPair() {
 
     console.log('Connecting cafehub to DE1…')
 
-    const msg: UpdateMessage = yield client.sendRequest({
+    const msg: UpdateMessage = yield ch.sendRequest({
         command: RequestCommand.GATTConnect,
         params: {
             MAC: msg.results.MAC,

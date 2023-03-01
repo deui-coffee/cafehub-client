@@ -33,9 +33,4 @@ function pair(name, as = name) {
     ]
 }
 
-export default [
-    ...pair('index'),
-    ...pair('types'),
-    ...pair('utils/index', 'utils'),
-    ...pair('errors/index', 'errors'),
-]
+export default [...pair('index'), ...pair('types')]

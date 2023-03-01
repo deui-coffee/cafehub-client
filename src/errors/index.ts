@@ -1,3 +1,5 @@
 export { default as AbortError } from './AbortError'
+export { default as ExecutionError } from './ExecutionError'
 export { default as SocketNotReadyError } from './SocketNotReadyError'
 export { default as TimeoutError } from './TimeoutError'
+export { default as MachineNotFoundError } from './MachineNotFoundError'
